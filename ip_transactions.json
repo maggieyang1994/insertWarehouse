@@ -1,0 +1,27 @@
+[
+  {
+    "TransactionID": 97484,
+    "Customer_Ref": "TEST_TIMEZONE01-CANCELED-97484",
+    "CreateDate": "2018-07-10T02:04:00.000Z",
+    "ShipDate": "2019-01-14T23:56:00.000Z",
+    "TrackingNumber": null,
+    "CustomerID": 7,
+    "CustomerName": "Royale Demo",
+    "BillMonth": 1,
+    "BillYear": 2019,
+    "QtyIn": 0,
+    "QtyOut": 0,
+    "Storage": 0,
+    "Handling": 0,
+    "Materials": 0,
+    "Special": 0,
+    "Freight": 0,
+    "ChargeTotal": 0,
+    "UpdateDate": "2019-11-21T09:43:46.000Z",
+    "FacilityID": 1,
+    "TransactionType": 1,
+    "ValueAdded": 0,
+    "LockRecord": 0,
+    "TransIDRef": ""
+  }
+]
