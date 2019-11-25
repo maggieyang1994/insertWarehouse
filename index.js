@@ -77,9 +77,11 @@ const insertData = async (connection, data, tableName, primaryObj, type) => {
     let res = await connection.query(sqlStr);
     console.log(`table ${tableName} ${count ? 'update' : 'insert'} Success(orderId: ${data.TransactionID}------customerCode:${data.CustomerName}------type:${type})`);
     totalCount++
-    // if(data.TransactionID === 144318) throw new Error("something wrong")
+    if(data.TransactionID === 144367) throw new Error("something wrong")
+    await connection.commit()
   } catch (e) {
     // 发生错误 rollback
+    await connection.rollback();
     throw new Error(`table ${tableName} insert fail: ${e}(orderId: ${data.TransactionID}------customerCode:${data.CustomerName}------type:${type})`)
   }
 }
@@ -178,7 +180,9 @@ const main = async (connection, url, type, token) => {
         }
         processList.push(processChild(connection, curData, [curData], tableMap[type], 'ip_transactions', ['TransactionID', 'TransIDRef'], type));
       }
-      await Promise.all(processList).catch(e => { throw (e) })
+      await Promise.all(processList).catch(e => { 
+        console.log(e)
+      })
     }
   } catch (e) {
     throw (e)
@@ -216,7 +220,7 @@ const run = async () => {
     let fromDate = '2019-10-01';
     let endDate = '2019-10-31'
     let customerCode = 'JFKPIM'
-    let type = ""
+    let type = "storage"
     console.time('getCutomer from dataBase')
     let customerCodes = await connection.query(`
       select 
@@ -251,9 +255,9 @@ const run = async () => {
     await Promise.all(mainList).catch(e => { throw (e) })
     console.timeEnd('total')
     console.log('finish!totalCount:' + totalCount)
-    await connection.commit()
+    
   } catch (e) {
-    await connection.rollback();
+   
     console.log(e)
   } finally {
     await connection.release()
