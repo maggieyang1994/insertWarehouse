@@ -1,6 +1,7 @@
 let axios = require("axios")
 let mysql = require("promise-mysql")
 let moment = require("moment")
+const color = require('colors')
 const program = require('commander');
 const { chargeTypeMap, outBoundMap, inBoundMap, storageMap, tableConfig } = require('./map.js');
 let totalCount = 0
@@ -56,9 +57,10 @@ const getDataFromWms = async (url, token) => {
 
 }
 
-const insertData = async (connection, data, tableName, primaryObj, type) => {
+const insertData = async (connection, data, tableName, primaryObj, type, clientId) => {
   let temp = [];
   let primaryKey = []
+  await connection.beginTransaction();
   // orderId 29413 "CompanyName": "Watson's", 需要转义单引号
   for (var key in data) {
     let tempValue = data[key];
@@ -74,19 +76,20 @@ const insertData = async (connection, data, tableName, primaryObj, type) => {
     // 如果有 直接删除 再插入
     let [{ count }] = await connection.query(`select count(1) as count from ${tableName} where ${primaryKey}`);
     if (count) await connection.query(`delete from ${tableName} where ${primaryKey}`)
+    if(data.TransactionID === 144383) throw new Error("something wrong")
     let res = await connection.query(sqlStr);
-    console.log(`table ${tableName} ${count ? 'update' : 'insert'} Success(orderId: ${data.TransactionID}------customerCode:${data.CustomerName}------type:${type})`);
+    console.log(`table ${tableName} ${count ? 'update' : 'insert'} Success(orderId: ${data.TransactionID}------clientId: ${clientId}------customerCode:${data.CustomerName}------type:${type})`);
     totalCount++
-    if(data.TransactionID === 144367) throw new Error("something wrong")
+
     await connection.commit()
   } catch (e) {
     // 发生错误 rollback
     await connection.rollback();
-    throw new Error(`table ${tableName} insert fail: ${e}(orderId: ${data.TransactionID}------customerCode:${data.CustomerName}------type:${type})`)
+    console.log('ERROR'.bgRed.black, `table ${tableName} insert fail: (orderId: ${data.TransactionID}------clientId: ${clientId}------customerCode:${data.CustomerName}------type:${type})------${e}`.red)
   }
 }
 
-const processChild = async (connection, originData, data, dataMap, tableName, primaryKeys, type) => {
+const processChild = async (connection, originData, data, dataMap, tableName, primaryKeys, type, clientId) => {
   for (let j = 0; j < data.length; j++) {
     let tempObj = {};
     let primaryObj = {}
@@ -103,7 +106,7 @@ const processChild = async (connection, originData, data, dataMap, tableName, pr
       UpdateDate: moment().format('YYYY-MM-DD HH:mm:ss')
     }
     primaryObj = primaryKeys.reduce((o, item) => { o[item] = tempObj[item]; return o }, {})
-    await insertData(connection, tempObj, tableName, primaryObj, type)
+    await insertData(connection, tempObj, tableName, primaryObj, type, clientId)
   }
 }
 
@@ -145,7 +148,7 @@ const calcChargeType = (billings, chargeTypeMap, chargeObj, type) => {
   })
   return chargeObj
 }
-const main = async (connection, url, type, token) => {
+const main = async (connection, url, type, token, clientId) => {
   try {
     let processList = []
     let originData = await getDataFromWms(url, token);
@@ -178,10 +181,10 @@ const main = async (connection, url, type, token) => {
           curData['BillYear'] = moment(curData.ArrivalDate).format("YYYY")
 
         }
-        processList.push(processChild(connection, curData, [curData], tableMap[type], 'ip_transactions', ['TransactionID', 'TransIDRef'], type));
+        processList.push(processChild(connection, curData, [curData], tableMap[type], 'ip_transactions', ['TransactionID', 'TransIDRef'], type, clientId));
       }
-      await Promise.all(processList).catch(e => { 
-        console.log(e)
+      await Promise.all(processList).catch(e => {
+        throw (e)
       })
     }
   } catch (e) {
@@ -201,7 +204,7 @@ const run = async () => {
   console.time('total')
   let pool = await createPool()
   let connection = await pool.getConnection()
-  await connection.beginTransaction();
+
   try {
     // program
     //   .version('1.0.0')
@@ -219,12 +222,12 @@ const run = async () => {
     // if (fromDate === 'Invalid date' || endDate === 'Invalid date') process.exit()
     let fromDate = '2019-10-01';
     let endDate = '2019-10-31'
-    let customerCode = 'JFKPIM'
-    let type = "storage"
+    let customerCode = ''
+    let type = ""
     console.time('getCutomer from dataBase')
     let customerCodes = await connection.query(`
       select 
-      client_custom_cust_wms_id as customerId
+      client_custom_cust_wms_id as customerId, ip_client_custom.client_id
       from ip_client_custom 
       join ip_clients on ip_clients.client_id = ip_client_custom.client_id and ip_clients.client_active = 1 
       ${customerCode ? `where client_custom_cust_pp_id = '${customerCode}'` : ''}`);
@@ -249,15 +252,17 @@ const run = async () => {
     for (curType of types) {
       for (let curCustomer of customerCodes) {
         // console.log(`curCustomer.customerCode`)
-        mainList.push(main(connection, getUrl(fromDate, endDate, curCustomer.customerId, curType), curType, token))
+        mainList.push(main(connection, getUrl(fromDate, endDate, curCustomer.customerId, curType), curType, token, curCustomer.client_id))
       }
     }
-    await Promise.all(mainList).catch(e => { throw (e) })
+    await Promise.all(mainList).catch(e => {
+     console.log('ERROR'.bgRed.black, e.message.red)
+    })
     console.timeEnd('total')
-    console.log('finish!totalCount:' + totalCount)
-    
+    console.log('DONE'.bgGreen.black, `totalCount: ${totalCount}`.green)
+
   } catch (e) {
-   
+
     console.log(e)
   } finally {
     await connection.release()
@@ -266,4 +271,5 @@ const run = async () => {
 }
 
 run()
+
 
