@@ -39,25 +39,27 @@ const getToken = () => {
 const getDataFromWms = async (url, token) => {
 
   try {
-    // console.time("getDataFromWms" + url)
+    // console.time("getDataFromWms")
     var res = await axios({
       method: 'get',
       url,
       headers: {
         'Content-Type': 'application/hal+json',
         'Authorization': 'Bearer ' + token
-      }
+      },
+      timeout: 60000
     });
-    // console.timeEnd("getDataFromWms" + url)
+    // console.timeEnd("getDataFromWms")
     return res.data
   } catch (e) {
     // if (e.message.indexOf(404) !== -1) throw new Error(`404: can not find order`);
-    throw e.message
+    throw `${e.message}----${url}`
   }
 
 }
 
 const insertData = async (connection, data, tableName, primaryObj, type, clientId) => {
+  // console.time('insertData')
   let temp = [];
   let primaryKey = []
   await connection.beginTransaction();
@@ -76,20 +78,22 @@ const insertData = async (connection, data, tableName, primaryObj, type, clientI
     // 如果有 直接删除 再插入
     let [{ count }] = await connection.query(`select count(1) as count from ${tableName} where ${primaryKey}`);
     if (count) await connection.query(`delete from ${tableName} where ${primaryKey}`)
-    if(data.TransactionID === 144383) throw new Error("something wrong")
+    // if (data.TransactionID === 144383) throw new Error("something wrong")
     let res = await connection.query(sqlStr);
     console.log(`table ${tableName} ${count ? 'update' : 'insert'} Success(orderId: ${data.TransactionID}------clientId: ${clientId}------customerCode:${data.CustomerName}------type:${type})`);
     totalCount++
 
     await connection.commit()
+    // console.timeEnd('insertData')
   } catch (e) {
-    // 发生错误 rollback
+    // 发生错误 rollback  取消删除
     await connection.rollback();
     console.log('ERROR'.bgRed.black, `table ${tableName} insert fail: (orderId: ${data.TransactionID}------clientId: ${clientId}------customerCode:${data.CustomerName}------type:${type})------${e}`.red)
   }
 }
 
 const processChild = async (connection, originData, data, dataMap, tableName, primaryKeys, type, clientId) => {
+  let tempList = []
   for (let j = 0; j < data.length; j++) {
     let tempObj = {};
     let primaryObj = {}
@@ -106,8 +110,9 @@ const processChild = async (connection, originData, data, dataMap, tableName, pr
       UpdateDate: moment().format('YYYY-MM-DD HH:mm:ss')
     }
     primaryObj = primaryKeys.reduce((o, item) => { o[item] = tempObj[item]; return o }, {})
-    await insertData(connection, tempObj, tableName, primaryObj, type, clientId)
+    tempList.push(insertData(connection, tempObj, tableName, primaryObj, type, clientId))
   }
+  await Promise.all(tempList)
 }
 
 const calcChargeType = (billings, chargeTypeMap, chargeObj, type) => {
@@ -184,11 +189,15 @@ const main = async (connection, url, type, token, clientId) => {
         processList.push(processChild(connection, curData, [curData], tableMap[type], 'ip_transactions', ['TransactionID', 'TransIDRef'], type, clientId));
       }
       await Promise.all(processList).catch(e => {
-        throw (e)
+        console.log(e)
+        // throw (e)
       })
     }
   } catch (e) {
-    throw (e)
+    // throw (e)
+    // error 不能中止进程
+    console.log('ERROR'.bgRed.black, e)
+
   }
 
 }
@@ -204,26 +213,24 @@ const run = async () => {
   console.time('total')
   let pool = await createPool()
   let connection = await pool.getConnection()
-
   try {
-    // program
-    //   .version('1.0.0')
-    //   .option('-y, --year <BillingYear>', 'BillingYear')
-    //   .option('-m, --month <BillingMonth>', 'BillingMonth')
-    //   .option('-i, --customerCode <customerCode>', 'customerCode')
-    //   .option('-t, --type <type>', 'type')
-    //   .parse(process.argv);
-    // let { year: BillingYear, month: BillingMonth, customerId, type } = program;
-    // console.log(BillingYear, BillingMonth, customerId, type)
-    // if (!(BillingYear && BillingMonth)) process.exit();
-    // let fromDate = moment([BillingYear, BillingMonth - 1]).startOf('month').format('YYYY-MM-DD');
-    // let endDate = moment([BillingYear, BillingMonth - 1]).endOf('month').format('YYYY-MM-DD');
-    // // console.log(fromDate, endDate)
-    // if (fromDate === 'Invalid date' || endDate === 'Invalid date') process.exit()
-    let fromDate = '2019-10-01';
-    let endDate = '2019-10-31'
-    let customerCode = ''
-    let type = ""
+    program
+      .version('1.0.0')
+      .option('-y, --year <BillingYear>', 'BillingYear')
+      .option('-m, --month <BillingMonth>', 'BillingMonth')
+      .option('-i, --customerCode <customerCode>', 'customerCode')
+      .option('-t, --type <type>', 'type')
+      .parse(process.argv);
+    let { year: BillingYear, month: BillingMonth, customerCode, type } = program;
+    console.log(BillingYear, BillingMonth, customerCode, type)
+    if (!(BillingYear && BillingMonth)) process.exit();
+    let fromDate = moment([BillingYear, BillingMonth - 1]).startOf('month').format('YYYY-MM-DD');
+    let endDate = moment([BillingYear, BillingMonth - 1]).endOf('month').format('YYYY-MM-DD');
+    if (fromDate === 'Invalid date' || endDate === 'Invalid date') process.exit()
+    // let fromDate = '2019-10-01';
+    // let endDate = '2019-10-31'
+    // let customerCode = ''
+    // let type = ""
     console.time('getCutomer from dataBase')
     let customerCodes = await connection.query(`
       select 
@@ -256,13 +263,13 @@ const run = async () => {
       }
     }
     await Promise.all(mainList).catch(e => {
-     console.log('ERROR'.bgRed.black, e.message.red)
+      console.log(e)
+      // 
     })
     console.timeEnd('total')
     console.log('DONE'.bgGreen.black, `totalCount: ${totalCount}`.green)
 
   } catch (e) {
-
     console.log(e)
   } finally {
     await connection.release()
