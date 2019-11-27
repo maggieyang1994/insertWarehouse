@@ -73,11 +73,11 @@ const insertData = async (connection, data, tableName, primaryObj, type, clientI
 
   let sqlStr = `insert into ${tableName} set ${temp.join(',')}`;
   try {
-    // 如果有 直接删除 再插入
+    // 如果有 直接删除 再插
     let [{ count }] = await connection.query(`select count(1) as count from ${tableName} where ${primaryKey}`);
     if (count) await connection.query(`delete from ${tableName} where ${primaryKey}`)
 
-    if (data.TransactionID === 144383) throw new Error("something wrong")
+    if (data.TransactionID === 143934) throw new Error("something wrong")
 
     await connection.query(sqlStr);
     console.log(`table ${tableName} ${count ? 'update' : 'insert'} Success(orderId: ${data.TransactionID}------clientId: ${clientId}------customerCode:${data.CustomerName}------type:${type})`);
@@ -226,7 +226,7 @@ const run = async () => {
     // if (fromDate === 'Invalid date' || endDate === 'Invalid date') process.exit()
     let fromDate = '2019-10-01';
     let endDate = '2019-10-31'
-    let customerCode = ''
+    let customerCode = 'DEMO'
     let type = ""
     let customerCodes = await connection.query(`
       select 
