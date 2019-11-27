@@ -57,7 +57,7 @@ const getDataFromWms = async (url, token) => {
 const insertData = async (connection, data, tableName, primaryObj, type, clientId) => {
   let temp = [];
   let primaryKey = []
-  await connection.beginTransaction();
+
 
   // orderId 29413 "CompanyName": "Watson's", 需要转义单引号
   for (var key in data) {
@@ -77,17 +77,18 @@ const insertData = async (connection, data, tableName, primaryObj, type, clientI
     let [{ count }] = await connection.query(`select count(1) as count from ${tableName} where ${primaryKey}`);
     if (count) await connection.query(`delete from ${tableName} where ${primaryKey}`)
 
-    if (data.TransactionID === 143934) throw new Error("something wrong")
+    if (data.TransactionID === 143897) throw new Error("something wrong")
 
     await connection.query(sqlStr);
-    console.log(`table ${tableName} ${count ? 'update' : 'insert'} Success(orderId: ${data.TransactionID}------clientId: ${clientId}------customerCode:${data.CustomerName}------type:${type})`);
-    totalCount++
+    // console.log(`table ${tableName} ${count ? 'update' : 'insert'} Success(orderId: ${data.TransactionID}------clientId: ${clientId}------customerCode:${data.CustomerName}------type:${type})`);
+    // totalCount++
 
-    await connection.commit()
+    return `table ${tableName} ${count ? 'update' : 'insert'} Success(orderId: ${data.TransactionID}------clientId: ${clientId}------customerCode:${data.CustomerName}------type:${type})`
   } catch (e) {
+    throw new Error(`table ${tableName} insert fail: (orderId: ${data.TransactionID}------clientId: ${clientId}------customerCode:${data.CustomerName}------type:${type})------${e}`)
     // 发生错误 rollback
-    await connection.rollback();
-    console.log('ERROR'.bgRed.black, `table ${tableName} insert fail: (orderId: ${data.TransactionID}------clientId: ${clientId}------customerCode:${data.CustomerName}------type:${type})------${e}`.red)
+    // await connection.rollback();
+    // console.log('ERROR'.bgRed.black, `table ${tableName} insert fail: (orderId: ${data.TransactionID}------clientId: ${clientId}------customerCode:${data.CustomerName}------type:${type})------${e}`.red)
   }
 }
 
@@ -108,7 +109,8 @@ const processChild = async (connection, originData, data, dataMap, tableName, pr
 
     let primaryObj = {}
     primaryObj = primaryKeys.reduce((o, item) => { o[item] = tempObj[item]; return o }, {})
-    await insertData(connection, tempObj, tableName, primaryObj, type, clientId)
+    return await insertData(connection, tempObj, tableName, primaryObj, type, clientId)
+     
   }
 }
 
@@ -192,8 +194,18 @@ const main = async (connection, url, type, token, clientId) => {
     const temp = processChild(connection, curData, [curData], tableMap[type], 'ip_transactions', ['TransactionID', 'TransIDRef'], type, clientId)
     processList.push(temp)
   }
+  return await Promise.all(processList);
 
-  await Promise.all(processList).catch(console.error)
+  // await Promise.all(processList).then(res => {
+  //   console.log(res.join("\n"))
+  //   totalCount += res.length
+  //   connection.commit()
+  // }).catch((e) => {
+  //   console.log("我日你妈")
+  //   connection.rollback().then(e => {
+  //     console.log('rollback'.bgRed, e.message)
+  //   })
+  // })
 }
 
 const getUrl = (fromDate, endDate, customerId, type) => {
@@ -209,7 +221,7 @@ const run = async () => {
   console.time('total')
   let pool = await mysql.createPool(tableConfig)
   let connection = await pool.getConnection()
-
+  await connection.beginTransaction();
   try {
     // program
     //   .version('1.0.0')
@@ -250,14 +262,29 @@ const run = async () => {
     let token = await getToken();
     token = token.data.access_token;
 
-    const mainList = []
-    for (curType of types) {
-      for (let curCustomer of customerCodes) {
+    // const mainList = []
+    let tempRes = [];
+    let tempError = ''
+    for (let curCustomer of customerCodes) {
+      for (curType of types) {
         const url = getUrl(fromDate, endDate, curCustomer.customerId, curType)
-        mainList.push(main(connection, url, curType, token, curCustomer.client_id))
+        try {
+          tempRes = tempRes.concat(await main(connection, url, curType, token, curCustomer.client_id))
+          // console.log(tempRes)
+        } catch (e) {
+          console.log(e);
+          tempError = e
+          break
+        }
+
       }
+      if (!tempError) {
+        console.log(tempRes.join("\n"));
+        totalCount += tempRes.length
+        await connection.commit()
+      } 
     }
-    await Promise.all(mainList).catch(console.error)
+    // await Promise.all(mainList).catch(console.error)
     console.timeEnd('total')
     console.log('DONE'.bgGreen.black, `totalCount: ${totalCount}`.green)
 
