@@ -35,8 +35,10 @@ const getToken = () => {
   });
 }
 
+const getDataFromWmsTime = []
 const getDataFromWms = async (url, token) => {
   try {
+    const timer = Date.now()
     var res = await axios({
       method: 'get',
       url,
@@ -44,8 +46,9 @@ const getDataFromWms = async (url, token) => {
         'Content-Type': 'application/hal+json',
         'Authorization': 'Bearer ' + token
       },
-      timeout: 60000
+      // timeout: 60000
     });
+    getDataFromWmsTime.push(Date.now() - timer)
     return res.data
   } catch (e) {
     // if (e.message.indexOf(404) !== -1) throw new Error(`404: can not find order`);
@@ -54,6 +57,7 @@ const getDataFromWms = async (url, token) => {
 
 }
 
+const insertDataTimr = []
 const insertData = async (connection, data, tableName, primaryObj, type, clientId) => {
   let temp = [];
   let primaryKey = []
@@ -73,13 +77,16 @@ const insertData = async (connection, data, tableName, primaryObj, type, clientI
 
   let sqlStr = `insert into ${tableName} set ${temp.join(',')}`;
   try {
+    const time = Date.now()
     // 如果有 直接删除 再插入
     let [{ count }] = await connection.query(`select count(1) as count from ${tableName} where ${primaryKey}`);
     if (count) await connection.query(`delete from ${tableName} where ${primaryKey}`)
 
-    if (data.TransactionID === 144040) throw new Error("something wrong")
+    // if (data.TransactionID === 143523) throw new Error("something wrong")
 
     await connection.query(sqlStr);
+    insertDataTimr.push(Date.now() - time)
+    // console.log('Insert success', Date.now() - time)
     return `table ${tableName} ${count ? 'update' : 'insert'} Success(orderId: ${data.TransactionID}------clientId: ${clientId}------customerCode:${data.CustomerName}------type:${type})`;
     // totalCount++
 
@@ -108,7 +115,7 @@ const processChild = async (connection, originData, data, dataMap, tableName, pr
 
     let primaryObj = {}
     primaryObj = primaryKeys.reduce((o, item) => { o[item] = tempObj[item]; return o }, {})
-    return await insertData(connection, tempObj, tableName, primaryObj, type, clientId).catch(e => {throw(e)})
+    return insertData(connection, tempObj, tableName, primaryObj, type, clientId)
   }
 }
 
@@ -151,68 +158,56 @@ const calcChargeType = (billings, chargeTypeMap, chargeObj, type) => {
   return chargeObj
 }
 
-const main = async (connection, token, curCustomer) => {
-  
-  // 循环type
-  let mainList = [];
-  await connection.beginTransaction();
-  for (let type of types) {
-    let processList = [];
-    let url = getUrl(curCustomer.customerId, type)
-    let originData = await getDataFromWms(url, token).catch(console.error)
-    if (!originData || !originData.TotalResults) return
 
-    for (let i = 0, len = originData.ResourceList.length; i < len; i++) {
-      let curData = originData.ResourceList[i];
-      let billings = safeGet(curData, "Billing/BillingCharges");
+const typeTask = async (connection, curCustomer, type, token) => {
+  console.log(`${curCustomer.clientId}:${curCustomer.client_name}:${type} start`)
+  let url = getUrl(curCustomer.customerId, type)
+  let originData = await getDataFromWms(url, token).catch(console.error)
+  if (!originData || !originData.TotalResults) return
 
-      if (billings && billings.length) {
-        let tempChargeObj = {
-          Handling: 0,
-          Storage: 0,
-          Freight: 0,
-          Materials: 0,
-          Special: 0,
-          ChargeTotal: 0
-        }
-        let tempObj = calcChargeType(billings, chargeTypeMap, tempChargeObj, type);
-        curData = {
-          ...curData,
-          ...tempObj
-        }
+  return originData.ResourceList.map(curData => {
+    let billings = safeGet(curData, "Billing/BillingCharges");
+    if (billings && billings.length) {
+      let tempChargeObj = {
+        Handling: 0,
+        Storage: 0,
+        Freight: 0,
+        Materials: 0,
+        Special: 0,
+        ChargeTotal: 0
       }
-
-      if (type === 'outbound' || type === 'storage') {
-        if (type === 'outbound' && curData.OrderItems && curData.OrderItems.length) curData['QtyOut'] = curData.OrderItems.reduce((o, item) => o += item.Qty, 0);
-        curData['BillMonth'] = moment(curData.ReadOnly.ProcessDate).format("MM");
-        curData['BillYear'] = moment(curData.ReadOnly.ProcessDate).format("YYYY")
-      }
-
-      else {
-        if (curData.OrderItems && curData.OrderItems.length) curData['QtyIn'] = curData.ReceiveItems.reduce((o, item) => o += item.Qty, 0);
-        curData['BillMonth'] = moment(curData.ArrivalDate).format("MM");
-        curData['BillYear'] = moment(curData.ArrivalDate).format("YYYY")
-
-      }
-
-      const temp = processChild(connection, curData, [curData], tableMap[type], 'ip_transactions', ['TransactionID', 'TransIDRef'], type, curCustomer.clientId).catch(e => {
-        throw(e)
-      })
-      // console.log(temp)
-      processList.push(temp)
+      let tempObj = calcChargeType(billings, chargeTypeMap, tempChargeObj, type);
+      curData = { ...curData, ...tempObj }
     }
-    mainList = mainList.concat(processList)
-  }
 
-  // console.log(mainList)
+    if (type === 'outbound' || type === 'storage') {
+      if (type === 'outbound' && curData.OrderItems && curData.OrderItems.length) curData['QtyOut'] = curData.OrderItems.reduce((o, item) => o += item.Qty, 0);
+      curData['BillMonth'] = moment(curData.ReadOnly.ProcessDate).format("MM");
+      curData['BillYear'] = moment(curData.ReadOnly.ProcessDate).format("YYYY")
+    }
+
+    else {
+      if (curData.OrderItems && curData.OrderItems.length) curData['QtyIn'] = curData.ReceiveItems.reduce((o, item) => o += item.Qty, 0);
+      curData['BillMonth'] = moment(curData.ArrivalDate).format("MM");
+      curData['BillYear'] = moment(curData.ArrivalDate).format("YYYY")
+    }
+
+    return processChild(connection, curData, [curData], tableMap[type], 'ip_transactions', ['TransactionID', 'TransIDRef'], type, curCustomer.clientId)
+  })
+}
+
+const main = async (connection, token, curCustomer) => {
+  await connection.beginTransaction();
+  let mainList = [].concat(...types.map(key => typeTask(connection, curCustomer, key, token)))
   await Promise.all(mainList).then(res => {
-    // console.log(res);
-    console.log(res.join("\n"));
+    return Promise.all([].concat(...res))
+  }).then(res => {
+    console.log(res.join("\n"))
     totalCount += res.length;
     connection.commit()
   }).catch(e => {
-    console.log(e);
-    connection.rollback()
+    console.log(`${curCustomer.clientId}:${curCustomer.client_name} Rollback all`.bgRed, e);
+    // connection.rollback()
   })
 }
 
@@ -232,26 +227,13 @@ const run = async () => {
   let connection = await pool.getConnection()
 
   try {
-    // program
-    //   .version('1.0.0')
-    //   .option('-y, --year <BillingYear>', 'BillingYear')
-    //   .option('-m, --month <BillingMonth>', 'BillingMonth')
-    //   .option('-i, --customerCode <customerCode>', 'customerCode')
-    //   .option('-t, --type <type>', 'type')
-    //   .parse(process.argv);
-    // let { year: BillingYear, month: BillingMonth, customerCode, type } = program;
-    // console.log(BillingYear, BillingMonth, customerCode, type)
-    // if (!(BillingYear && BillingMonth)) process.exit();
-    // let fromDate = moment([BillingYear, BillingMonth - 1]).startOf('month').format('YYYY-MM-DD');
-    // let endDate = moment([BillingYear, BillingMonth - 1]).endOf('month').format('YYYY-MM-DD');
-    // if (fromDate === 'Invalid date' || endDate === 'Invalid date') process.exit()
     fromDate = '2019-10-01';
     endDate = '2019-10-31'
-    customerCode = 'DEMO';
+    customerCode = '';
     types = ""
     let customerCodes = await connection.query(`
       select 
-      client_custom_cust_wms_id as customerId, ip_client_custom.client_id as clientId
+      client_custom_cust_wms_id as customerId, ip_client_custom.client_id as clientId, ip_clients.client_name
       from ip_client_custom 
       join ip_clients on ip_clients.client_id = ip_client_custom.client_id and ip_clients.client_active = 1 
       ${customerCode ? `where client_custom_cust_pp_id = '${customerCode}'` : ''}`);
@@ -279,6 +261,7 @@ const run = async () => {
     }
     // }
     await Promise.all(mainList).catch(console.error)
+    console.log('time of get data form wms', getDataFromWmsTime)
     console.timeEnd('total')
     console.log('DONE'.bgGreen.black, `totalCount: ${totalCount}`.green)
 
