@@ -82,23 +82,29 @@ const insertData = async (connection, data, tableName, primaryObj, type, clientI
     let [{ count }] = await connection.query(`select count(1) as count from ${tableName} where ${primaryKey}`);
     if (count) await connection.query(`delete from ${tableName} where ${primaryKey}`)
 
-    // if (data.TransactionID === 143523) throw new Error("something wrong")
+    if (data.TransactionID === 141079) throw new Error("something wrong")
 
     await connection.query(sqlStr);
     insertDataTimr.push(Date.now() - time)
     // console.log('Insert success', Date.now() - time)
-    return `table ${tableName} ${count ? 'update' : 'insert'} Success(orderId: ${data.TransactionID}------clientId: ${clientId}------customerCode:${data.CustomerName}------type:${type})`;
+    return {
+      code: 1,
+      msg: `table ${tableName} ${count ? 'update' : 'insert'} Success(orderId: ${data.TransactionID}------clientId: ${clientId}------customerCode:${data.CustomerName}------type:${type})`
+    }
     // totalCount++
 
     // await connection.commit()
   } catch (e) {
     // 发生错误 rollback
     // await connection.rollback();
-    throw new Error(`table ${tableName} insert fail: (orderId: ${data.TransactionID}------clientId: ${clientId}------customerCode:${data.CustomerName}------type:${type})------${e}`)
+     return {
+       code: -1,
+       msg: `table ${tableName} insert fail: (orderId: ${data.TransactionID}------clientId: ${clientId}------customerCode:${data.CustomerName}------type:${type})------${e}`
+     }
   }
 }
 
-const processChild = async (connection, originData, data, dataMap, tableName, primaryKeys, type, clientId) => {
+const processChild = async (connection, data, dataMap, tableName, primaryKeys, type, clientId) => {
   for (let j = 0; j < data.length; j++) {
     let tempObj = {};
     for (var detailKey in dataMap) {
@@ -162,8 +168,11 @@ const calcChargeType = (billings, chargeTypeMap, chargeObj, type) => {
 const typeTask = async (connection, curCustomer, type, token) => {
   console.log(`${curCustomer.clientId}:${curCustomer.client_name}:${type} start`)
   let url = getUrl(curCustomer.customerId, type)
-  let originData = await getDataFromWms(url, token).catch(console.error)
-  if (!originData || !originData.TotalResults) return
+  let originData = await getDataFromWms(url, token)
+  if (!originData || !originData.TotalResults) {
+    console.log(`${curCustomer.clientId}:${curCustomer.client_name}:${type}- has no data`);
+    return
+  }
 
   return originData.ResourceList.map(curData => {
     let billings = safeGet(curData, "Billing/BillingCharges");
@@ -192,7 +201,7 @@ const typeTask = async (connection, curCustomer, type, token) => {
       curData['BillYear'] = moment(curData.ArrivalDate).format("YYYY")
     }
 
-    return processChild(connection, curData, [curData], tableMap[type], 'ip_transactions', ['TransactionID', 'TransIDRef'], type, curCustomer.clientId)
+    return processChild(connection, [curData], tableMap[type], 'ip_transactions', ['TransactionID', 'TransIDRef'], type, curCustomer.clientId)
   })
 }
 
@@ -200,13 +209,18 @@ const main = async (connection, token, curCustomer) => {
   await connection.beginTransaction();
   let mainList = [].concat(...types.map(key => typeTask(connection, curCustomer, key, token)))
   await Promise.all(mainList).then(res => {
-    return Promise.all([].concat(...res))
+    return Promise.all([].concat(...res.filter(x => x)))
   }).then(res => {
-    console.log(res.join("\n"))
-    totalCount += res.length;
-    connection.commit()
+    if(res.every(x => x.code === 1)){
+      console.log(res.map(x => x.msg).join("\n"))
+      totalCount += res.length;
+      connection.commit()
+    }else {
+      throw new Error(res.filter(x => x.code === -1).map(x => x.msg).join("\n"))
+    }
   }).catch(e => {
-    console.log(`${curCustomer.clientId}:${curCustomer.client_name} Rollback all`.bgRed, e);
+    console.log(e)
+    console.log(`${curCustomer.clientId}:${curCustomer.client_name} Rollback all`.bgRed);
     // connection.rollback()
   })
 }
@@ -229,7 +243,7 @@ const run = async () => {
   try {
     fromDate = '2019-10-01';
     endDate = '2019-10-31'
-    customerCode = '';
+    customerCode = 'JFKPIM';
     types = ""
     let customerCodes = await connection.query(`
       select 
@@ -277,5 +291,9 @@ let endDate = '';
 let customerCode = ''
 let types = ""
 run()
+// 一个customerCode 对应  一个main   promise.all 并发
+// 一个main  对应多个 typetask       promise.all 并发
+// 一个type task 对应  多个 processChild  
+// 一个processChild 对应一个insertData
 
 
