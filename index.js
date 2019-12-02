@@ -78,11 +78,10 @@ const insertData = async (connection, data, tableName, primaryObj, type, clientI
   let sqlStr = `insert into ${tableName} set ${temp.join(',')}`;
   try {
     const time = Date.now()
-    // 如果有 直接删除 再插入
+    // 如果有 update  else insert
     let [{ count }] = await connection.query(`select count(1) as count from ${tableName} where ${primaryKey}`);
-    if (count) await connection.query(`delete from ${tableName} where ${primaryKey}`)
+    if (count) sqlStr = `update  ${tableName} set ${temp.join(',')} where ${primaryKey}`
 
-    if (data.TransactionID === 141079) throw new Error("something wrong")
 
     await connection.query(sqlStr);
     insertDataTimr.push(Date.now() - time)
@@ -95,12 +94,10 @@ const insertData = async (connection, data, tableName, primaryObj, type, clientI
 
     // await connection.commit()
   } catch (e) {
-    // 发生错误 rollback
-    // await connection.rollback();
-     return {
-       code: -1,
-       msg: `table ${tableName} insert fail: (orderId: ${data.TransactionID}------clientId: ${clientId}------customerCode:${data.CustomerName}------type:${type})------${e}`
-     }
+    return {
+      code: -1,
+      msg: `table ${tableName} insert fail: (orderId: ${data.TransactionID}------clientId: ${clientId}------customerCode:${data.CustomerName}------type:${type})------${e}`
+    }
   }
 }
 
@@ -170,7 +167,7 @@ const typeTask = async (connection, curCustomer, type, token) => {
   let url = getUrl(curCustomer.customerId, type)
   let originData = await getDataFromWms(url, token)
   if (!originData || !originData.TotalResults) {
-    console.log(`${curCustomer.clientId}:${curCustomer.client_name}:${type}- has no data`);
+    console.log(`${curCustomer.clientId}:${curCustomer.client_name}:${type} - has no data`);
     return
   }
 
@@ -205,24 +202,25 @@ const typeTask = async (connection, curCustomer, type, token) => {
   })
 }
 
-const main = async (connection, token, curCustomer) => {
+const main = async (pool, token, curCustomer) => {
+  let connection = await pool.getConnection()
   await connection.beginTransaction();
   let mainList = [].concat(...types.map(key => typeTask(connection, curCustomer, key, token)))
   await Promise.all(mainList).then(res => {
     return Promise.all([].concat(...res.filter(x => x)))
   }).then(res => {
-    if(res.every(x => x.code === 1)){
+    if (res.every(x => x.code === 1)) {
       console.log(res.map(x => x.msg).join("\n"))
       totalCount += res.length;
       connection.commit()
-    }else {
+    } else {
       throw new Error(res.filter(x => x.code === -1).map(x => x.msg).join("\n"))
     }
   }).catch(e => {
     console.log(e)
-    console.log(`${curCustomer.clientId}:${curCustomer.client_name} Rollback all`.bgRed);
-    // connection.rollback()
-  })
+    e.message && (console.log(`${curCustomer.clientId}:${curCustomer.client_name} Rollback all`.bgRed), connection.rollback()) 
+  });
+  await connection.release()
 }
 
 const getUrl = (customerId, type) => {
@@ -241,11 +239,21 @@ const run = async () => {
   let connection = await pool.getConnection()
 
   try {
-    fromDate = '2019-10-01';
-    endDate = '2019-10-31'
-    customerCode = 'JFKPIM';
-    types = ""
-    let customerCodes = await connection.query(`
+    program
+      .version('1.0.0')
+      .option('-y, --year <BillingYear>', 'BillingYear')
+      .option('-m, --month <BillingMonth>', 'BillingMonth')
+      .option('-i, --customerCode <customerCode>', 'customerCode')
+      .option('-t, --type <type>', 'type')
+      .parse(process.argv);
+    let { year: BillingYear, month: BillingMonth, customerCode, type } = program;
+    console.log(BillingYear, BillingMonth, customerCode, type)
+    if (!(BillingYear && BillingMonth)) process.exit();
+    fromDate = moment([BillingYear, BillingMonth - 1]).startOf('month').format('YYYY-MM-DD');
+    endDate = moment([BillingYear, BillingMonth - 1]).endOf('month').format('YYYY-MM-DD');
+    if (fromDate === 'Invalid date' || endDate === 'Invalid date') process.exit()
+
+    customerCodes = await connection.query(`
       select 
       client_custom_cust_wms_id as customerId, ip_client_custom.client_id as clientId, ip_clients.client_name
       from ip_client_custom 
@@ -257,9 +265,9 @@ const run = async () => {
     }
 
 
-    if (types) {
-      if (!tableMap[types]) (console.log(`${types} doesn't exist`), process.exit());
-      types = [types]
+    if (type) {
+      if (!tableMap[type]) (console.log(`${type} doesn't exist`), process.exit());
+      types = [type]
     } else {
       types = Object.keys(tableMap)
     }
@@ -271,11 +279,11 @@ const run = async () => {
     // for (curType of types) {
     for (let curCustomer of customerCodes) {
       // const url = getUrl(fromDate, endDate, curCustomer.customerId, curType)
-      mainList.push(main(connection, token, curCustomer))
+      mainList.push(main(pool, token, curCustomer))
     }
     // }
     await Promise.all(mainList).catch(console.error)
-    console.log('time of get data form wms', getDataFromWmsTime)
+    console.log('the last time of get data form wms', getDataFromWmsTime[getDataFromWmsTime.length - 1])
     console.timeEnd('total')
     console.log('DONE'.bgGreen.black, `totalCount: ${totalCount}`.green)
 
